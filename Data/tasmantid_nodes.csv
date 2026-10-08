@@ -1,0 +1,25 @@
+fid,node_id,name,chain,feature,status,notes,lon,lat
+2,T01,Kenn Reef,Tasmantid,reef-capped edifice,include,"Single distinct volcanic edifice; habitat shallower than 200 m excluded",155.716273298017,-21.1850507472364
+3,T02,Wreck Reefs,Tasmantid,Reef-capped seamount,Include,Only include > 200m depth,155.334198618036,-22.1801566182978
+4,T03,Cato Reef,Tasmantid,Reef-capped seamount,include,> 200m included only,155.551960904073,-23.2096497859254
+5,T04,North Fraser Seamount,Tasmantid,Seamount,Include,,155.36300620584,-24.0966696924751
+6,T05,South Fraser Seamount,Tasmantid,Seamount,Include,,155.298843081724,-24.4337193565081
+7,T06,North Recorder,Tasmantid,Guyot,Include,,155.012085315,-24.9350922267073
+8,T07,South Recorder ,Tasmantid,Guyot,Include,,154.938413116413,-25.1926412817427
+9,T08,North Moreton Seamount,Tasmantid,Seamount,Include,,155.102462066269,-25.7127591393199
+10,T09,South Moreton Seamount,Tasmantid,Seamount,Include,,154.958414905561,-26.017911677136
+11,T10,East Moreton Seamount,Tasmantid,Seamount,Include,,155.249352263044,-25.9837952443367
+12,T11,Mooloolaba Seamount,Tasmantid,Seamount,Include,,154.873123823562,-26.3278026083964
+13,T12,North Brisbane Guyot,Tasmantid,Seamount,Include,,155.064554918714,-26.7589964118323
+14,T13,South Brisbane Guyot,Tasmantid,Seamount,Include,,155.08445617118,-26.9854916184722
+15,T14,Queensland Guyot,Tasmantid,Guyot,Include,,155.206284276048,-27.5933479300784
+16,T15,North Britannia Guyot,Tasmantid,Guyot,Include,,155.652572348915,-28.0010678978833
+17,T16,Central Britannia Guyot,Tasmantid,Guyot,Include,,155.633288296384,-28.3013481444423
+18,T17,South Britannia Guyot,Tasmantid,Guyot,Include,,155.545132627669,-28.6098929849433
+19,T18,Stradbroke Seamount,Tasmantid,Seamount,Include,,155.84992586082,-29.0931782982579
+20,T19,Unnamed Tasmantid Seamount,Tasmantid,Seamount,Include,,156.316872167024,-29.771795249286
+22,T20,Derwent Hunter Guyot,Tasmantid,Guyot,Include,,156.268330051927,-30.8194984888953
+23,T21,Barcoo Bank,Tasmantid,Seamount,Include,,156.264875559213,-32.5993046465341
+24,T22,Taupo Bank,Tasmantid,Seamount,Include,,156.164403262911,-33.1828862478055
+25,T23,Kimbla Seamount,Tasmantid,Seamount,Include,,156.529117592411,-35.0932632904847
+26,T24,Gascoyne Seamount,Tasmantid,Seamount,Include,,156.210865226105,-36.6845251220174

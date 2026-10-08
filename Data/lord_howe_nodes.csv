@@ -1,0 +1,13 @@
+fid,node_id,name,chain,feature,status,notes,lon,lat
+1,L01,Horsehead Seamount,Lord Howe,Seamount,Include,,158.738158445221,-17.5970939803098
+2,L02,Chesterfield Plateau,Lord Howe,Volcanic edifice on plateau,Include,,158.679932883753,-18.7279044311495
+3,L03,Nova Bank,Lord Howe,Bank,Include,,159.266075388883,-22.3670230404786
+4,L04,Argo Bank,Lord Howe,Bank,Include,,159.548414209684,-23.1923211320525
+5,L05,Kelso Bank,Lord Howe,Bank,Include,,159.516508681262,-24.0698199456322
+6,L06,Capel Bank,Lord Howe,Bank,Include,,159.707419504838,-25.0625562282306
+7,L07,Gifford Guyot,Lord Howe,Guyot,Include,,159.425242257551,-26.6976176328311
+8,L08,Unnamed Lord Howe Seamount,Lord Howe,Seamount,Include,,159.347796364283,-27.0074012059006
+9,L9,Middleton Reef,Lord Howe,Reef-capped volcanic edifice,Include,,159.096932439666,-29.4530039416653
+10,L10,Elizabeth Reef,Lord Howe,Reef-capped volcanic edifice,Include,,159.0829274945,-29.9417765279505
+11,L12,Ball's Pyramid,Lord Howe,Island-capped volcanic edifice ,Include,,159.265684093312,-31.7792727295594
+12,L11,Lord Howe Island,Lord Howe,Island-capped volcanic edifice,Include,,159.091794685594,-31.5590128131175
