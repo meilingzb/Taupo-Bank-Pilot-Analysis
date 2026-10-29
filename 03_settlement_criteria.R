@@ -1,32 +1,41 @@
 # Taupo Bank Analysis pt. 4 :)
-# Depth-resolved settlement 
+# Depth-resolved potential habitat encounters
 #
-# Settlement is defined as the first encounter between a competent
-# particle and a seamount benthic surface within the settlement distance.
+# Potential settlement events are identified for competent particles using
+# the same bathymetry and grid resolution represented in the LLC4320v2
+# circulation model.
 #
-# For each competent particle position, the minimum 3-D Euclidean
-# distance to the benthic surface is calculated:
-# D = sqrt(horizontal_distance^2 + vertical_distance^2)
+# The GEBCO-derived NETVOLC polygons from 02 are retained as the horizontal
+# seamount footprints. They define which part of the model seabed belongs to
+# each seamount, while LLC4320v2 supplies the benthic depth used to evaluate
+# the particle trajectories.
 #
-# Horizontal distance is measured from the particle to the GEBCO
-# benthic surface patch, while vertical distance is the difference
-# between particle depth and seafloor depth at that location.
+# A particle position qualifies as a potential settlement event when:
 #
-# If more than one seamount satisfies the settlement criterion at the
-# same time, the closest benthic surface is used. The seafloor depth of
-# this closest surface defines the destination depth stratum.
+# 1. the particle is biologically competent and has not exceeded its PLD;
+# 2. its horizontal distance from a mapped benthic patch is within one
+#    area-equivalent local LLC4320v2 model-cell width;
+# 3. the particle is above the benthic surface; and
+# 4. its height above the benthic surface is within one LLC4320v2 vertical
+#    model layer at that benthic depth.
 #
-# The settlement distance is to be based on the coarsest vertical resolution
-# of the LLC4320 ocean model, so settlement is not resolved at a finer
-# scale than the circulation model itself.
+# If more than one benthic surface qualifies at the same timestep, the nearest
+# surface in 3-D Euclidean distance is retained. Only the first qualifying
+# encounter is then kept for each particle and PLD scenario.
 #
-# However I don't yet have the LLC4320 vertical-grid info.
-# I used a settlement distance of 500 m for now as a placeholder since Dustin 
-# used this value in his analysis, and mentioned the resolution at the bottom 
-# layer was about 500 m
+# This was updated from the previous Euclidean distance method as biologically 
+# we could not justify any reasonable encounter distance thresholds, so this
+# method basically considers "settlement" as being within the model-resolved 
+# grid cell of the benthic surface on the seamount.
+# 
+# This is to do with the fact that we don't know any sort of encounter distances
+# required for deep-sea coral (e.g. if they can sense when they're near a seamount), 
+# but we know of course contact with the benthos needs to occur for settlement.
+# This does have limitations, such as the fact the grid cells change size with 
+# depth/horizontal distance, however, it is more biologically reasonable and 
+# represents benthic encounterment rather than larval sensing distance/thresholds. 
 
 library(sf)
-library(terra)
 library(dplyr)
 library(tibble)
 library(ncdf4)
@@ -34,20 +43,43 @@ library(ncdf4)
 
 # Load project inputs
 
-source("00_setup_and_inputs_.R")
-
-
-# Final seamount footprints
+candidate_nodes <- readRDS(
+  file.path(
+    "Outputs",
+    "candidate_nodes.rds"
+  )
+)
 
 final_footprints <- readRDS(
-  "final_seamount_footprints.rds"
+  file.path(
+    "Outputs",
+    "final_seamount_footprints.rds"
+  )
+)
+
+
+# Raw model files
+
+particle_file <- file.path(
+  "Data",
+  "tasman_seamount_2023_merged.nc"
+)
+
+horizontal_grid_file <- file.path(
+  "Data",
+  "LLC4320v2_tasman_horizontal_grid.nc"
+)
+
+vertical_grid_file <- file.path(
+  "Data",
+  "LLC4320v2_vertical_grid.nc"
 )
 
 
 # Current pilot source
 #
-# Source seamount is defined by Dustin's release simulation,
-# rather than inferred from the NETVOLC footprints.
+# Source seamount is defined by Dustin's release simulation rather than
+# inferred from the later NETVOLC footprint.
 
 source_node_current <- "T22"
 
@@ -87,27 +119,242 @@ assign_depth_stratum <- function(depth_m) {
 
 # Biological scenarios
 #
-# Pre-competency is set to one-third of each PLD.
+# The full biological design crosses three pelagic larval durations (PLDs)
+# with three pre-competency periods. This gives nine biological scenarios:
+#
+# PLD = 30, 60, 90 days
+# pre-competency = 14, 21, 28 days
+#
+# Pre-competency is treated independently of PLD so its effect on potential
+# settlement can be examined without changing the total larval duration.
 
-biological_scenarios <- tibble(
-  pld_days = c(
-    30,
-    60,
-    90
+biological_scenarios <- dplyr::cross_join(
+  tibble(
+    pld_days = c(
+      30,
+      60,
+      90
+    )
+  ),
+  tibble(
+    precompetency_days = c(
+      14,
+      21,
+      28
+    )
   )
 ) %>%
-  mutate(
-    precompetency_days =
-      pld_days / 3
+  arrange(
+    pld_days,
+    precompetency_days
   )
 
 
-# Settlement distance
+# LLC4320v2 horizontal grid
 #
-# Replace this with the maximum LLC4320 vertical layer thickness
-# once the vertical-grid information is available.
+# Depth gives the model bathymetry and RAC gives the horizontal tracer-cell
+# area. sqrt(RAC) is used as an area-equivalent local model-cell width.
 
-settlement_radius_m <- 500
+orient_model_matrix <- function(
+    x,
+    n_j,
+    n_i) {
+  
+  if (
+    length(dim(x)) == 2 &&
+    all(dim(x) == c(n_j, n_i))
+  ) {
+    return(x)
+  }
+  
+  if (
+    length(dim(x)) == 2 &&
+    all(dim(x) == c(n_i, n_j))
+  ) {
+    return(t(x))
+  }
+  
+  stop(
+    "Unexpected LLC4320v2 grid dimensions."
+  )
+}
+
+
+horizontal_nc <- ncdf4::nc_open(
+  horizontal_grid_file
+)
+
+n_j <- horizontal_nc$dim$j$len
+n_i <- horizontal_nc$dim$i$len
+
+XC <- orient_model_matrix(
+  ncdf4::ncvar_get(
+    horizontal_nc,
+    "XC"
+  ),
+  n_j,
+  n_i
+)
+
+YC <- orient_model_matrix(
+  ncdf4::ncvar_get(
+    horizontal_nc,
+    "YC"
+  ),
+  n_j,
+  n_i
+)
+
+model_depth_m <- orient_model_matrix(
+  ncdf4::ncvar_get(
+    horizontal_nc,
+    "Depth"
+  ),
+  n_j,
+  n_i
+)
+
+cell_area_m2 <- orient_model_matrix(
+  ncdf4::ncvar_get(
+    horizontal_nc,
+    "RAC"
+  ),
+  n_j,
+  n_i
+)
+
+ncdf4::nc_close(
+  horizontal_nc
+)
+
+# Dustin's Tasman Sea subset is rectilinear in longitude and latitude, so
+# the 2-D centre coordinates can be represented by one longitude vector and
+# one latitude vector when constructing local model-cell polygons.
+
+llc_longitude <- as.numeric(
+  XC[1, ]
+)
+
+llc_latitude <- as.numeric(
+  YC[, 1]
+)
+
+rm(
+  XC,
+  YC
+)
+
+
+# Convert model-cell centres to cell edges.
+#
+# Interior edges lie halfway between neighbouring centres. The two outer
+# edges are extended by half of the nearest centre spacing.
+
+centres_to_edges <- function(centres) {
+  
+  interior_edges <- (
+    centres[-1] +
+      centres[-length(centres)]
+  ) / 2
+  
+  first_edge <-
+    centres[1] -
+    (interior_edges[1] - centres[1])
+  
+  last_edge <-
+    centres[length(centres)] +
+    (centres[length(centres)] -
+       interior_edges[length(interior_edges)])
+  
+  c(
+    first_edge,
+    interior_edges,
+    last_edge
+  )
+}
+
+
+llc_longitude_edges <- centres_to_edges(
+  llc_longitude
+)
+
+llc_latitude_edges <- centres_to_edges(
+  llc_latitude
+)
+
+
+# LLC4320v2 vertical grid
+#
+# DRF gives model-layer thickness and depth_F gives layer-interface depths.
+# The layer thickness at each benthic depth is used as the vertical encounter
+# tolerance.
+
+vertical_nc <- ncdf4::nc_open(
+  vertical_grid_file
+)
+
+llc_layer_width_m <- abs(
+  as.vector(
+    ncdf4::ncvar_get(
+      vertical_nc,
+      "DRF"
+    )
+  )
+)
+
+llc_depth_interfaces_m <- abs(
+  as.vector(
+    ncdf4::ncvar_get(
+      vertical_nc,
+      "depth_F"
+    )
+  )
+)
+
+ncdf4::nc_close(
+  vertical_nc
+)
+
+vertical_grid <- tibble(
+  layer = seq_along(
+    llc_layer_width_m
+  ),
+  top_depth_m =
+    llc_depth_interfaces_m[
+      -length(llc_depth_interfaces_m)
+    ],
+  bottom_depth_m =
+    llc_depth_interfaces_m[-1],
+  layer_width_m =
+    llc_layer_width_m
+)
+
+
+get_vertical_resolution_at_depth <- function(
+    depth_m,
+    vertical_grid) {
+  
+  layer_index <- findInterval(
+    depth_m,
+    vertical_grid$top_depth_m
+  )
+  
+  layer_width_m <- rep(
+    NA_real_,
+    length(depth_m)
+  )
+  
+  valid <-
+    layer_index >= 1 &
+    layer_index <= nrow(vertical_grid)
+  
+  layer_width_m[valid] <-
+    vertical_grid$layer_width_m[
+      layer_index[valid]
+    ]
+  
+  layer_width_m
+}
 
 
 # Local projected coordinate system
@@ -128,12 +375,12 @@ get_local_utm_epsg <- function(lon, lat) {
 
 # Build the benthic surface for one seamount.
 #
-# Each GEBCO raster cell inside the final footprint is treated
-# as a small benthic surface patch.
+# The GEBCO-derived NETVOLC polygon defines the horizontal footprint of the
+# seamount. LLC4320v2 cells intersecting that footprint provide the benthic
+# depth used by the particle model and the local horizontal model resolution.
 
 build_benthic_surface <- function(
     footprint,
-    gebco,
     node_lon,
     node_lat,
     minimum_depth_m = 200) {
@@ -143,43 +390,156 @@ build_benthic_surface <- function(
     4326
   )
   
-  
-  # Crop GEBCO around the footprint.
-  
-  local_gebco <- crop(
-    gebco,
-    vect(footprint_ll),
-    snap = "out"
+  footprint_geometry <- st_union(
+    st_geometry(
+      footprint_ll
+    )
   )
   
+  footprint_bbox <- st_bbox(
+    footprint_geometry
+  )
   
-  elevation_name <- names(
-    local_gebco
-  )[1]
+  lon_left <- pmin(
+    llc_longitude_edges[
+      -length(llc_longitude_edges)
+    ],
+    llc_longitude_edges[-1]
+  )
   
+  lon_right <- pmax(
+    llc_longitude_edges[
+      -length(llc_longitude_edges)
+    ],
+    llc_longitude_edges[-1]
+  )
   
-  # Convert GEBCO cells to polygons so horizontal distance
-  # is measured to the cell surface rather than its centre.
+  lat_bottom <- pmin(
+    llc_latitude_edges[
+      -length(llc_latitude_edges)
+    ],
+    llc_latitude_edges[-1]
+  )
   
-  surface_cells <- as.polygons(
-    local_gebco,
-    values = TRUE,
-    na.rm = TRUE,
-    aggregate = FALSE
+  lat_top <- pmax(
+    llc_latitude_edges[
+      -length(llc_latitude_edges)
+    ],
+    llc_latitude_edges[-1]
+  )
+  
+  i_index <- which(
+    lon_left <= footprint_bbox["xmax"] &
+      lon_right >= footprint_bbox["xmin"]
+  )
+  
+  j_index <- which(
+    lat_bottom <= footprint_bbox["ymax"] &
+      lat_top >= footprint_bbox["ymin"]
+  )
+  
+  cell_index <- expand.grid(
+    global_j = j_index,
+    global_i = i_index,
+    KEEP.OUT.ATTRS = FALSE
   ) %>%
-    st_as_sf()
+    as_tibble()
   
+  cell_index$depth_m <- model_depth_m[
+    cbind(
+      cell_index$global_j,
+      cell_index$global_i
+    )
+  ]
   
-  # Clip cells to the final footprint.
+  cell_index$cell_area_m2 <- cell_area_m2[
+    cbind(
+      cell_index$global_j,
+      cell_index$global_i
+    )
+  ]
+  
+  cell_index <- cell_index %>%
+    filter(
+      is.finite(depth_m),
+      depth_m >= minimum_depth_m,
+      is.finite(cell_area_m2),
+      cell_area_m2 > 0
+    )
+  
+  cell_polygons <- lapply(
+    seq_len(nrow(cell_index)),
+    function(i) {
+      
+      grid_i <- cell_index$global_i[i]
+      grid_j <- cell_index$global_j[i]
+      
+      xmin <- min(
+        llc_longitude_edges[
+          c(grid_i, grid_i + 1)
+        ]
+      )
+      
+      xmax <- max(
+        llc_longitude_edges[
+          c(grid_i, grid_i + 1)
+        ]
+      )
+      
+      ymin <- min(
+        llc_latitude_edges[
+          c(grid_j, grid_j + 1)
+        ]
+      )
+      
+      ymax <- max(
+        llc_latitude_edges[
+          c(grid_j, grid_j + 1)
+        ]
+      )
+      
+      st_polygon(
+        list(
+          matrix(
+            c(
+              xmin, ymin,
+              xmax, ymin,
+              xmax, ymax,
+              xmin, ymax,
+              xmin, ymin
+            ),
+            ncol = 2,
+            byrow = TRUE
+          )
+        )
+      )
+    }
+  )
+  
+  surface_cells <- st_sf(
+    cell_index,
+    geometry = st_sfc(
+      cell_polygons,
+      crs = 4326
+    )
+  )
+  
+  surface_cells <- surface_cells[
+    lengths(
+      st_intersects(
+        surface_cells,
+        footprint_geometry
+      )
+    ) > 0,
+  ]
+  
+  # Clip cells at the edge of the seamount so horizontal distance is measured
+  # to the part of the model cell that actually lies within the NETVOLC footprint.
   
   surface_cells <- suppressWarnings(
     st_intersection(
       surface_cells,
-      st_union(
-        st_geometry(
-          footprint_ll
-        )
-      )
+      footprint_geometry
     )
   )
   
@@ -187,23 +547,20 @@ build_benthic_surface <- function(
     !st_is_empty(surface_cells),
   ]
   
+  # One local horizontal model-cell width.
+  #
+  # RAC is the horizontal area of each tracer cell. Its square root provides
+  # an area-equivalent characteristic cell width in metres.
   
-  # GEBCO elevation is negative below sea level.
+  surface_cells$horizontal_tolerance_m <- sqrt(
+    surface_cells$cell_area_m2
+  )
   
-  surface_cells$z_m <-
-    surface_cells[[elevation_name]]
-  
-  surface_cells$depth_m <-
-    -surface_cells$z_m
-  
-  
-  # Only benthic habitat at 200 m depth or deeper is retained.
-  
-  surface_cells <- surface_cells %>%
-    filter(
-      depth_m >= minimum_depth_m
+  surface_cells$vertical_tolerance_m <-
+    get_vertical_resolution_at_depth(
+      surface_cells$depth_m,
+      vertical_grid
     )
-  
   
   surface_cells$depth_stratum <-
     as.character(
@@ -212,12 +569,17 @@ build_benthic_surface <- function(
       )
     )
   
+  surface_cells <- surface_cells %>%
+    filter(
+      is.finite(horizontal_tolerance_m),
+      is.finite(vertical_tolerance_m),
+      !is.na(depth_stratum)
+    )
   
   surface_cells$surface_cell_id <-
     seq_len(
       nrow(surface_cells)
     )
-  
   
   # Work in metres for distance calculations.
   
@@ -237,8 +599,7 @@ build_benthic_surface <- function(
 
 build_all_benthic_surfaces <- function(
     final_footprints,
-    candidate_nodes,
-    gebco) {
+    candidate_nodes) {
   
   surface_list <- vector(
     "list",
@@ -247,7 +608,6 @@ build_all_benthic_surfaces <- function(
   
   names(surface_list) <-
     final_footprints$node_id
-  
   
   for (i in seq_len(nrow(final_footprints))) {
     
@@ -264,9 +624,6 @@ build_all_benthic_surfaces <- function(
         footprint =
           final_footprints[i, ],
         
-        gebco =
-          gebco,
-        
         node_lon =
           node$lon,
         
@@ -275,26 +632,25 @@ build_all_benthic_surfaces <- function(
       )
   }
   
-  
   surface_list
 }
 
 
-# Settlement search zones
+# Habitat-encounter search zones
 #
-# These buffers are only used as a horizontal pre-screen.
-# Actual settlement is determined using the 3-D Euclidean distance.
+# These buffers are only a computational pre-screen. Each footprint is
+# expanded by the largest local model-cell width on that seamount. The final
+# encounter test still uses the tolerance attached to each individual cell.
 
 build_settlement_search_zones <- function(
     final_footprints,
     candidate_nodes,
-    settlement_radius_m) {
+    surface_list) {
   
   zone_list <- vector(
     "list",
     nrow(final_footprints)
   )
-  
   
   for (i in seq_len(nrow(final_footprints))) {
     
@@ -305,6 +661,11 @@ build_settlement_search_zones <- function(
       filter(
         node_id == node_id_current
       )
+    
+    maximum_tolerance_m <- max(
+      surface_list[[node_id_current]]$horizontal_tolerance_m,
+      na.rm = TRUE
+    )
     
     utm_epsg <- get_local_utm_epsg(
       node$lon,
@@ -322,7 +683,7 @@ build_settlement_search_zones <- function(
           footprint_m
         )
       ),
-      dist = settlement_radius_m
+      dist = maximum_tolerance_m
     )
     
     zone_list[[i]] <- st_sf(
@@ -336,7 +697,6 @@ build_settlement_search_zones <- function(
         )
     )
   }
-  
   
   do.call(
     rbind,
@@ -675,16 +1035,16 @@ calculate_release_counts <- function(
     )
 }
 
-# Settlement encounters
+# Potential settlement events
 #
-# Each unique eligible particle position is tested against the
-# benthic surfaces once. PLD and competency are applied afterwards.
+# Each unique competent particle position is tested against the model benthic
+# surface once. PLD and competency are then used below to retain the first
+# qualifying encounter under each biological scenario.
 
 calculate_position_encounters <- function(
     biological_trajectories,
     surface_list,
-    search_zones,
-    settlement_radius_m) {
+    search_zones) {
   
   positions <- biological_trajectories %>%
     filter(
@@ -703,9 +1063,6 @@ calculate_position_encounters <- function(
         row_number()
     )
   
-  
-  # Convert particle positions to spatial points once.
-  
   points_ll <- st_as_sf(
     positions,
     coords = c(
@@ -716,14 +1073,13 @@ calculate_position_encounters <- function(
     remove = FALSE
   )
   
-  
-  # Horizontal pre-screen using the buffered seamount footprints.
+  # Use the buffered footprints to identify which seamount surfaces need to
+  # be checked for each particle position.
   
   zone_hits <- st_intersects(
     points_ll,
     search_zones
   )
-  
   
   candidate_pairs <- tibble(
     position_id =
@@ -739,13 +1095,11 @@ calculate_position_encounters <- function(
       )
   )
   
-  
   if (nrow(candidate_pairs) == 0) {
     return(
       tibble()
     )
   }
-  
   
   candidate_pairs <- candidate_pairs %>%
     mutate(
@@ -755,23 +1109,19 @@ calculate_position_encounters <- function(
         ]
     )
   
-  
   encounter_list <- vector(
     "list",
     length(surface_list)
   )
   
-  
   node_ids <- names(
     surface_list
   )
-  
   
   for (n in seq_along(node_ids)) {
     
     node_id_current <-
       node_ids[n]
-    
     
     node_positions <- candidate_pairs %>%
       filter(
@@ -782,26 +1132,19 @@ calculate_position_encounters <- function(
         position_id
       )
     
-    
     if (length(node_positions) == 0) {
       next
     }
-    
     
     surface_cells <-
       surface_list[[
         node_id_current
       ]]
     
-    
     position_rows <- match(
       node_positions,
       positions$position_id
     )
-    
-    
-    # Transform all candidate particle positions for this seamount
-    # into the same projected CRS as its benthic surface.
     
     points_m <- points_ll[
       position_rows,
@@ -812,17 +1155,16 @@ calculate_position_encounters <- function(
         )
       )
     
-    
-    # Find GEBCO patches within the horizontal settlement radius.
+    maximum_tolerance_m <- max(
+      surface_cells$horizontal_tolerance_m,
+      na.rm = TRUE
+    )
     
     nearby_cells <- st_is_within_distance(
       points_m,
       surface_cells,
-      dist = settlement_radius_m
+      dist = maximum_tolerance_m
     )
-    
-    
-    # Expand the spatial matches into particle-surface pairs.
     
     pair_table <- tibble(
       point_index =
@@ -838,28 +1180,21 @@ calculate_position_encounters <- function(
         )
     )
     
-    
     if (nrow(pair_table) == 0) {
       next
     }
-    
-    
-    # Calculate horizontal distance for all candidate pairs together.
     
     horizontal_distance_m <- as.numeric(
       st_distance(
         points_m[
           pair_table$point_index,
         ],
-        
         surface_cells[
           pair_table$cell_index,
         ],
-        
         by_element = TRUE
       )
     )
-    
     
     particle_depth_m <-
       positions$depth_m[
@@ -868,26 +1203,37 @@ calculate_position_encounters <- function(
         ]
       ]
     
-    
-    surface_z_m <-
-      surface_cells$z_m[
+    surface_depth_m <-
+      surface_cells$depth_m[
         pair_table$cell_index
       ]
     
+    # Positive values mean the particle is above the seabed. Negative values
+    # would place the particle below the mapped benthic surface and are not
+    # considered valid habitat encounters.
+    
+    height_above_benthos_m <-
+      surface_depth_m -
+      particle_depth_m
     
     vertical_distance_m <- abs(
-      -particle_depth_m -
-        surface_z_m
+      height_above_benthos_m
     )
     
+    horizontal_tolerance_m <-
+      surface_cells$horizontal_tolerance_m[
+        pair_table$cell_index
+      ]
     
-    # Full 3-D Euclidean distance.
+    vertical_tolerance_m <-
+      surface_cells$vertical_tolerance_m[
+        pair_table$cell_index
+      ]
     
     distance_3d_m <- sqrt(
       horizontal_distance_m^2 +
         vertical_distance_m^2
     )
-    
     
     pair_table <- pair_table %>%
       mutate(
@@ -899,13 +1245,8 @@ calculate_position_encounters <- function(
         destination_node =
           node_id_current,
         
-        distance_m =
-          distance_3d_m,
-        
         settlement_depth_m =
-          surface_cells$depth_m[
-            cell_index
-          ],
+          surface_depth_m,
         
         destination_depth_stratum =
           as.character(
@@ -914,29 +1255,56 @@ calculate_position_encounters <- function(
             ]
           ),
         
+        horizontal_distance_m =
+          horizontal_distance_m,
+        
+        horizontal_tolerance_m =
+          horizontal_tolerance_m,
+        
+        vertical_distance_m =
+          vertical_distance_m,
+        
+        height_above_benthos_m =
+          height_above_benthos_m,
+        
+        vertical_tolerance_m =
+          vertical_tolerance_m,
+        
+        distance_3d_m =
+          distance_3d_m,
+        
+        # Keep the original distance_m field name for compatibility with
+        # existing downstream code. It is the full 3-D distance.
+        
+        distance_m =
+          distance_3d_m,
+        
         surface_cell_id =
           surface_cells$surface_cell_id[
             cell_index
           ]
       ) %>%
       filter(
-        distance_m <=
-          settlement_radius_m
+        horizontal_distance_m <=
+          horizontal_tolerance_m,
+        
+        height_above_benthos_m >= 0,
+        
+        height_above_benthos_m <=
+          vertical_tolerance_m
       )
-    
     
     if (nrow(pair_table) == 0) {
       next
     }
     
-    
-    # Retain the closest benthic patch for each particle position
-    # on this seamount.
+    # If several benthic cells on the same seamount qualify, retain the
+    # nearest surface in 3-D.
     
     encounter_list[[n]] <- pair_table %>%
       arrange(
         position_id,
-        distance_m,
+        distance_3d_m,
         surface_cell_id
       ) %>%
       group_by(
@@ -945,22 +1313,12 @@ calculate_position_encounters <- function(
       slice_head(
         n = 1
       ) %>%
-      ungroup() %>%
-      select(
-        position_id,
-        destination_node,
-        settlement_depth_m,
-        destination_depth_stratum,
-        distance_m,
-        surface_cell_id
-      )
+      ungroup()
   }
-  
   
   encounters <- bind_rows(
     encounter_list
   )
-  
   
   if (nrow(encounters) == 0) {
     return(
@@ -968,14 +1326,13 @@ calculate_position_encounters <- function(
     )
   }
   
-  
-  # If more than one seamount qualifies at the same timestep,
-  # use the nearest benthic surface.
+  # If more than one seamount qualifies at the same timestep, retain the
+  # nearest qualifying benthic surface in 3-D.
   
   encounters %>%
     arrange(
       position_id,
-      distance_m,
+      distance_3d_m,
       destination_node
     ) %>%
     group_by(
@@ -998,7 +1355,7 @@ calculate_position_encounters <- function(
 }
 
 
-# Empty settlement table
+# Empty potential-settlement-event table
 
 empty_settlement_events <- function() {
   
@@ -1017,24 +1374,28 @@ empty_settlement_events <- function() {
     destination_node = character(),
     settlement_depth_m = numeric(),
     destination_depth_stratum = character(),
+    horizontal_distance_m = numeric(),
+    horizontal_tolerance_m = numeric(),
+    vertical_distance_m = numeric(),
+    height_above_benthos_m = numeric(),
+    vertical_tolerance_m = numeric(),
+    distance_3d_m = numeric(),
     distance_m = numeric(),
-    settlement_radius_m = numeric(),
     surface_cell_id = integer()
   )
 }
 
 
-# First-settlement rule
+# First qualifying potential-settlement-event rule
 #
-# Geometric encounters are calculated once for each particle position.
-# PLD and competency are then used to identify the first valid settlement
-# under each biological scenario.
+# Geometric encounters are calculated once for each particle position. PLD
+# and competency are then used to identify the first qualifying encounter
+# under each biological scenario. No persistence criterion is applied.
 
 calculate_settlement_events <- function(
     biological_trajectories,
     surface_list,
-    search_zones,
-    settlement_radius_m) {
+    search_zones) {
   
   position_encounters <- calculate_position_encounters(
     biological_trajectories =
@@ -1044,19 +1405,14 @@ calculate_settlement_events <- function(
       surface_list,
     
     search_zones =
-      search_zones,
-    
-    settlement_radius_m =
-      settlement_radius_m
+      search_zones
   )
-  
   
   if (nrow(position_encounters) == 0) {
     return(
       empty_settlement_events()
     )
   }
-  
   
   biological_trajectories %>%
     filter(
@@ -1071,10 +1427,15 @@ calculate_settlement_events <- function(
           destination_node,
           settlement_depth_m,
           destination_depth_stratum,
+          horizontal_distance_m,
+          horizontal_tolerance_m,
+          vertical_distance_m,
+          height_above_benthos_m,
+          vertical_tolerance_m,
+          distance_3d_m,
           distance_m,
           surface_cell_id
         ),
-      
       by = c(
         "particle_id",
         "release_id",
@@ -1088,13 +1449,17 @@ calculate_settlement_events <- function(
     ) %>%
     arrange(
       particle_id,
+      release_id,
       pld_days,
+      precompetency_days,
       particle_age_days,
       observation_index
     ) %>%
     group_by(
       particle_id,
-      pld_days
+      release_id,
+      pld_days,
+      precompetency_days
     ) %>%
     slice_head(
       n = 1
@@ -1124,11 +1489,13 @@ calculate_settlement_events <- function(
       destination_node,
       settlement_depth_m,
       destination_depth_stratum,
+      horizontal_distance_m,
+      horizontal_tolerance_m,
+      vertical_distance_m,
+      height_above_benthos_m,
+      vertical_tolerance_m,
+      distance_3d_m,
       distance_m,
-      
-      settlement_radius_m =
-        settlement_radius_m,
-      
       surface_cell_id
     )
 }
@@ -1141,10 +1508,7 @@ benthic_surfaces <- build_all_benthic_surfaces(
     final_footprints,
   
   candidate_nodes =
-    candidate_nodes,
-  
-  gebco =
-    gebco
+    candidate_nodes
 )
 
 
@@ -1158,8 +1522,8 @@ settlement_search_zones <-
     candidate_nodes =
       candidate_nodes,
     
-    settlement_radius_m =
-      settlement_radius_m
+    surface_list =
+      benthic_surfaces
   )
 
 
@@ -1211,7 +1575,7 @@ release_counts <- calculate_release_counts(
 )
 
 
-# Find first settlement events
+# Find first qualifying potential settlement events
 
 settlement_events <- calculate_settlement_events(
   biological_trajectories =
@@ -1221,64 +1585,67 @@ settlement_events <- calculate_settlement_events(
     benthic_surfaces,
   
   search_zones =
-    settlement_search_zones,
-  
-  settlement_radius_m =
-    settlement_radius_m
+    settlement_search_zones
 )
 
 
-# Save outputs used by the network analysis
+# Save outputs used by the connectivity analysis
 
 saveRDS(
   network_nodes,
-  "network_nodes.rds"
+  file.path(
+    "Outputs",
+    "network_nodes.rds"
+  )
 )
 
 saveRDS(
   release_counts,
-  "release_counts.rds"
+  file.path(
+    "Outputs",
+    "release_counts.rds"
+  )
 )
 
 saveRDS(
   settlement_events,
-  "settlement_events.rds"
+  file.path(
+    "Outputs",
+    "settlement_events.rds"
+  )
 )
 
 saveRDS(
   biological_scenarios,
-  "biological_scenarios.rds"
+  file.path(
+    "Outputs",
+    "biological_scenarios.rds"
+  )
+)
+
+# Save the model benthic surfaces and vertical grid used by the encounter
+# calculation so the spatial criteria can be inspected and reproduced later.
+
+saveRDS(
+  benthic_surfaces,
+  file.path(
+    "Outputs",
+    "benthic_surfaces.rds"
+  )
 )
 
 saveRDS(
-  settlement_radius_m,
-  "settlement_radius_m.rds"
-)
-
-
-# Quick look at the raw settlement results
-
-settlement_events %>%
-  count(
-    release_id,
-    pld_days,
-    source_depth_stratum,
-    destination_node,
-    destination_depth_stratum,
-    name = "n_settled"
-  ) %>%
-  print(n = Inf)
-
-release_counts %>%
-  arrange(
-    release_id,
-    pld_days,
-    source_depth_stratum
+  vertical_grid,
+  file.path(
+    "Outputs",
+    "llc_vertical_grid.rds"
   )
-
-# Save trajectories 
+)
 
 saveRDS(
   particle_trajectories,
-  "particle_trajectories.rds"
+  file.path(
+    "Outputs",
+    "particle_trajectories.rds"
+  )
 )
